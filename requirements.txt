@@ -1,0 +1,20 @@
+# 乒乓球落點分析系統 - 依賴套件
+
+# YOLO 模型
+ultralytics>=8.0.0
+
+# 影像處理
+opencv-python>=4.8.0
+opencv-python-headless>=4.8.0
+
+# 數值運算
+numpy>=1.24.0
+
+# 影片處理（額外支援）
+av>=12.0.0
+
+# 測試框架
+pytest>=7.4.0
+
+# 設定檔解析
+pyyaml>=6.0.0

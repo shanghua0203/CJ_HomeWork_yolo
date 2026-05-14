@@ -1,0 +1,75 @@
+# 乒乓球落點分析系統 - 設定檔
+
+# === 路徑設定 ===
+paths:
+  # 測試影片路徑
+  video: "data/sample_video.mp4"
+
+  # YOLO 模型路徑（使用預設的 yolov8n.pt）
+  # 會自動從 ultralytics 下載
+  model: "yolov8n.pt"
+
+  # 輸出資料夾
+  output: "output/"
+
+
+# === YOLO 偵測設定 ===
+detector:
+  # 乒乓球類別編號（依訓練模型而定）
+  # yolov8n.pt 預設沒有乒乓球類別，這裡假設類別為 0
+  # 若使用自訂模型，請修改此值
+  class_id: 0
+
+  # 信心閾值（0.0 ~ 1.0）
+  confidence: 0.5
+
+  # 偵測框大小下限（pixels），太小的忽略
+  min_size: 10
+
+  # NMS 閾值（非極大值抑制）
+  iou_threshold: 0.4
+
+
+# === 雜訊過濾設定 ===
+filter:
+  # 相鄰兩幀最大允許位移（pixels），超過視為雜訊
+  max_jump: 100
+
+  # 允許球消失的最多幀數（掉幀處理）
+  max_missing_frames: 2
+
+
+# === 落點判斷設定 ===
+landing:
+  # Y 軸變化閾值：用於判斷反彈點
+  # 當 Y 軸從變大變成變小，且變化幅度超過此值，視為反彈
+  y_reversal_threshold: 5
+
+
+# === 視角轉換設定 ===
+perspective:
+  # 輸出鳥瞰圖的解析度
+  output_width: 800
+  output_height: 600
+
+  # 預設四個角落座標（可被滑鼠點選覆蓋）
+  # 順序：左上、右上、左下、右下
+  default_corners:
+    top_left: [100, 100]
+    top_right: [700, 100]
+    bottom_left: [100, 500]
+    bottom_right: [700, 500]
+
+
+# === 輸出設定 ===
+output:
+  # 是否顯示即時預覽
+  show_preview: true
+
+  # 是否儲存結果影片
+  save_video: true
+  output_video: "output/result.mp4"
+
+  # 是否儲存結果圖片
+  save_image: false
+  output_image: "output/result.jpg"

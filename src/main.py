@@ -47,7 +47,10 @@ class PingPongAnalyzer:
         output_dir: str = "output",
         use_mouse_selection: bool = False,
         auto_detect_table: bool = True,
-        confidence: float = 0.5
+        confidence: float = 0.5,
+        frame_width: int = 1920,
+        frame_height: int = 1080,
+        max_jump: int = 100
     ):
         """
         初始化分析器
@@ -59,8 +62,14 @@ class PingPongAnalyzer:
         - use_mouse_selection: 是否使用滑鼠點選桌子角落
         - auto_detect_table: 是否自動偵測桌子角落
         - confidence: 偵測信心閾值
+        - frame_width: 影片寬度
+        - frame_height: 影片高度
+        - max_jump: 最大跳躍距離
         """
         self.video_path = video_path
+        self.frame_width = frame_width
+        self.frame_height = frame_height
+        self.max_jump = max_jump
         self.output_dir = output_dir
         self.use_mouse_selection = use_mouse_selection
         self.auto_detect_table = auto_detect_table
@@ -75,7 +84,11 @@ class PingPongAnalyzer:
             confidence=confidence
         )
 
-        self.filter = TrajectoryFilter(max_jump=100)
+        self.filter = TrajectoryFilter(
+            frame_width=frame_width,
+            frame_height=frame_height,
+            max_jump=max_jump
+        )
         self.tracker = BallTracker(max_missing_frames=2)
         self.landing_detector = LandingDetector(
             y_reversal_threshold=5,
@@ -191,14 +204,29 @@ class PingPongAnalyzer:
         # 建立輸出影片編寫器
         output_path = os.path.join(self.output_dir, "result.mp4")
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width * 2, height))
+
+        # 確保輸出寬度是偶數（FFmpeg 要求）
+        output_w = (width + self.transformer.output_width) // 2 * 2
+        output_h = max(height, self.transformer.output_height)
+
+        out = cv2.VideoWriter(output_path, fourcc, fps, (output_w, output_h))
 
         # 重置追蹤器
         self.tracker.reset()
         self.all_landings = []
 
+        # 重置落點偵測器
+        self.landing_detector.reset()
+
         frame_number = 0
         processed_frames = 0
+
+        # 每 N 幀偵測一次桌面角落（攝影機移動時需要重新偵測）
+        table_detect_interval = 150
+        last_table_detection = 0
+
+        # 追蹤軌跡段，用於分段偵測落點
+        last_frame_idx = -9999
 
         print("\n開始處理影片...")
 
@@ -209,26 +237,71 @@ class PingPongAnalyzer:
             if not ret:
                 break
 
-            # 偵測乒乓球
-            detection = self.detector.detect(frame)
+            # 定期偵測桌面角落
+            if frame_number - last_table_detection >= table_detect_interval:
+                new_corners = auto_detect_table_corners(frame)
+                if new_corners:
+                    self.transformer.set_corners(new_corners)
+                    self.bird_eye_viz = BirdEyeVisualizer(transformer=self.transformer)
+                    last_table_detection = frame_number
+                    print(f"  [幀 {frame_number}] 更新桌面角落")
+
+            # 偵測乒乓球（使用新方法取得偵測框）
+            detection_result = self.detector.detect_with_box(frame)
+            detection = None
+
+            if detection_result:
+                center_x, center_y, x1, y1, x2, y2, conf = detection_result
+                detection = (center_x, center_y)
+                current_detection = (x1, y1, x2, y2, conf, 'ball')
+            else:
+                current_detection = None
 
             # 更新追蹤器
             self.tracker.update(detection, frame_number)
 
-            # 取得當前軌跡
+            # 追蹤當前球段
             trajectory = self.tracker.get_trajectory()
             frame_indices = self.tracker.get_frame_indices()
-
+            
+            # 找當前球開始的索引（大間隙後開始）
+            current_ball_start = 0
+            if len(frame_indices) >= 2:
+                for j in range(len(frame_indices) - 1, 0, -1):
+                    if frame_indices[j] - frame_indices[j-1] > 50:
+                        current_ball_start = j + 1
+                        break
+            
+            # 只取當前球的軌跡
+            current_trajectory = trajectory[current_ball_start:]
+            current_frame_indices = frame_indices[current_ball_start:]
+            
             # 過濾軌跡
-            filtered_trajectory = self.filter.filter_trajectory(trajectory)
-
+            filtered_trajectory = self.filter.filter_trajectory(current_trajectory)
+            
             # 偵測落點
+            current_landings = []
             if len(filtered_trajectory) >= 3:
-                landings = self.landing_detector.detect(
+                current_landings = self.landing_detector.detect(
                     filtered_trajectory,
-                    frame_indices
+                    current_frame_indices
                 )
-                self.all_landings.extend(landings)
+            
+            # 添加新落點到總列表（避免重複）
+            for lp in current_landings:
+                is_dup = any(
+                    abs(lp.x - l.x) < 10 and abs(lp.y - l.y) < 10 
+                    for l in self.all_landings
+                )
+                if not is_dup:
+                    self.all_landings.append(lp)
+
+            # 繪製偵測框
+            if current_detection:
+                x1, y1, x2, y2, conf, label = current_detection
+                output_frame = self.trajectory_viz.draw_detection_box(
+                    output_frame, x1, y1, x2, y2, conf, label
+                )
 
             # 繪製軌跡
             output_frame = self.trajectory_viz.draw_trajectory(

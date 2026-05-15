@@ -27,7 +27,7 @@ class BallDetector:
     def __init__(
         self,
         model_path: str = "yolov8n.pt",
-        class_id: int = 0,
+        class_id: int = 32,
         confidence: float = 0.5,
         min_size: int = 10,
         iou_threshold: float = 0.4
@@ -51,6 +51,12 @@ class BallDetector:
         # 載入 YOLO 模型
         # 使用 verbose=False 減少終端機輸出
         self.model = YOLO(model_path)
+        
+        # 過濾已知的誤判位置（穩定的錯誤偵測）
+        # 格式：(center_x, center_y, tolerance)
+        self.filter_false_positives = [
+            (1750, 581, 15),  # 影片右上角LOGO/計時器區域
+        ]
 
     def detect(self, frame: np.ndarray) -> Optional[Tuple[int, int]]:
         """
@@ -148,6 +154,130 @@ class BallDetector:
 
         return results
 
+    def detect_with_box(
+        self,
+        frame: np.ndarray
+    ) -> Optional[Tuple[int, int, int, int, int, int, float]]:
+        """
+        偵測乒乓球並返回中心座標與偵測框資訊
+
+        參數：
+        - frame: OpenCV 讀取的影像 (numpy array，格式為 BGR)
+
+        回傳：
+        - (center_x, center_y, x1, y1, x2, y2, confidence)
+          如果沒偵測到球則回傳 None
+        """
+        # 執行 YOLO 偵測
+        results = self.model(
+            frame,
+            conf=self.confidence,
+            iou=self.iou_threshold,
+            verbose=False
+        )
+
+        # 解析偵測結果
+        if results is None or len(results) == 0:
+            return None
+
+        result = results[0]
+        boxes = result.boxes
+
+        if boxes is None or len(boxes) == 0:
+            return None
+
+        # 遍歷所有偵測到的物件，找乒乓球
+        best_ball = None
+        best_conf = 0.0
+
+        for box in boxes:
+            cls_id = int(box.cls[0])
+
+            if cls_id != self.class_id:
+                continue
+
+            conf = float(box.conf[0])
+
+            if conf < self.confidence:
+                continue
+
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+
+            width = x2 - x1
+            height = y2 - y1
+
+            if width < self.min_size or height < self.min_size:
+                continue
+
+            if conf > best_conf:
+                best_conf = conf
+                best_ball = (x1, y1, x2, y2)
+
+        if best_ball is None:
+            return None
+
+        x1, y1, x2, y2 = best_ball
+        center_x = (x1 + x2) / 2
+        center_y = (y1 + y2) / 2
+        
+        if self._is_false_positive(center_x, center_y):
+            return None
+        
+        return (int(center_x), int(center_y), int(x1), int(y1), int(x2), int(y2), float(best_conf))
+
+    def _is_false_positive(self, center_x: float, center_y: float) -> bool:
+        """檢查是否是已知的誤判位置"""
+        for fx, fy, tolerance in self.filter_false_positives:
+            if abs(center_x - fx) <= tolerance and abs(center_y - fy) <= tolerance:
+                return True
+        return False
+
+    def detect_all_objects(
+        self,
+        frame: np.ndarray,
+        conf_threshold: float = 0.25
+    ) -> List[Tuple[int, int, int, int, int, float, str]]:
+        """
+        偵測畫面中所有物件（用於偵測球桌）
+
+        參數：
+        - frame: 原始影像
+        - conf_threshold: 信心閾值
+
+        回傳：
+        - [(center_x, center_y, x1, y1, x2, y2, confidence, class_name), ...]
+        """
+        results = self.model(frame, conf=conf_threshold, verbose=False)
+
+        if not results or not results[0].boxes:
+            return []
+
+        detections = []
+        # COCO 類別名稱（只用常見的）
+        coco_names = {
+            0: 'person', 32: 'sports ball', 13: 'bench',
+            38: 'teddy bear'
+        }
+
+        for box in results[0].boxes:
+            cls_id = int(box.cls[0])
+            conf = float(box.conf[0])
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+
+            center_x = int((x1 + x2) / 2)
+            center_y = int((y1 + y2) / 2)
+
+            class_name = coco_names.get(cls_id, f'class_{cls_id}')
+
+            detections.append((
+                center_x, center_y,
+                int(x1), int(y1), int(x2), int(y2),
+                float(conf),
+                class_name
+            ))
+
+        return detections
+
 
 def load_image(image_path: str) -> Optional[np.ndarray]:
     """
@@ -171,7 +301,7 @@ def load_image(image_path: str) -> Optional[np.ndarray]:
 def detect_from_video(
     video_path: str,
     model_path: str = "yolov8n.pt",
-    class_id: int = 0,
+    class_id: int = 32,
     confidence: float = 0.5
 ) -> List[Tuple[int, int, int]]:
     """

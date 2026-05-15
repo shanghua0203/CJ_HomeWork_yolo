@@ -33,7 +33,7 @@ class TableCorners:
 
     def to_array(self) -> np.ndarray:
         """
-        轉換為 numpy 陣列格式
+        轉換為 numpy 陣列格式（順時針順序：左上 -> 右上 -> 右下 -> 左下）
 
         回傳：
         - 4x2 的 numpy 陣列
@@ -41,26 +41,26 @@ class TableCorners:
         return np.array([
             self.top_left,
             self.top_right,
-            self.bottom_left,
-            self.bottom_right
+            self.bottom_right,
+            self.bottom_left
         ], dtype=np.float32)
 
     @classmethod
     def from_array(cls, array: np.ndarray) -> "TableCorners":
         """
-        從 numpy 陣列建立
+        從 numpy 陣列建立（預期順時針順序）
 
         參數：
-        - array: 4x2 的 numpy 陣列
+        - array: 4x2 的 numpy 陣列 [左上, 右上, 右下, 左下]
 
         回傳：
         - TableCorners 物件
         """
         return cls(
-            top_left=tuple(map(int, array[0])),
-            top_right=tuple(map(int, array[1])),
-            bottom_left=tuple(map(int, array[2])),
-            bottom_right=tuple(map(int, array[3]))
+            top_left=tuple(int(x) for x in array[0]),
+            top_right=tuple(int(x) for x in array[1]),
+            bottom_right=tuple(int(x) for x in array[2]),
+            bottom_left=tuple(int(x) for x in array[3])
         )
 
 
@@ -134,13 +134,13 @@ class PerspectiveTransformer:
 
     def transform_point(self, x: int, y: int) -> Tuple[int, int]:
         """
-        將原視角座標轉換為鳥瞰圖座標
+        將原視角座標轉換為鳥瞰圖座標（含邊界檢查）
 
         參數：
         - x, y: 原視角的座標
 
         回傳：
-        - (x, y) 鳥瞰圖中的座標
+        - (x, y) 鳥瞰圖中的座標（已 clamp 到合理範圍）
         """
         if self.transform_matrix is None:
             return (x, y)
@@ -149,7 +149,14 @@ class PerspectiveTransformer:
         point = np.array([[[x, y]]], dtype=np.float32)
         transformed = cv2.perspectiveTransform(point, self.transform_matrix)
 
-        return (int(transformed[0][0][0]), int(transformed[0][0][1]))
+        tx = transformed[0][0][0]
+        ty = transformed[0][0][1]
+
+        # clamp 到鳥瞰圖範圍內
+        tx = max(0, min(int(tx), self.output_width - 1))
+        ty = max(0, min(int(ty), self.output_height - 1))
+
+        return (tx, ty)
 
     def inverse_transform_point(self, x: int, y: int) -> Tuple[int, int]:
         """

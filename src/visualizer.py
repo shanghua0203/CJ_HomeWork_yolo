@@ -62,6 +62,15 @@ class VisualizationConfig:
     # 是否顯示落點
     show_landing_points: bool = True
 
+    # 是否顯示偵測框（預設開啟）
+    show_detection_box: bool = True
+
+    # 偵測框顏色 (B, G, R)
+    detection_box_color: Tuple[int, int, int] = (0, 255, 0)
+
+    # 偵測框粗細
+    detection_box_thickness: int = 2
+
 
 class TrajectoryVisualizer:
     """
@@ -138,6 +147,91 @@ class TrajectoryVisualizer:
                 )
             else:
                 cv2.circle(output, (x, y), 3, self.config.trajectory_color, -1)
+
+        return output
+
+    def draw_detection_box(
+        self,
+        frame: np.ndarray,
+        x1: int, y1: int,
+        x2: int, y2: int,
+        confidence: float = 1.0,
+        label: str = "ball"
+    ) -> np.ndarray:
+        """
+        在影像上繪製偵測框
+
+        參數：
+        - frame: 原始影像
+        - x1, y1, x2, y2: 偵測框座標
+        - confidence: 信心值
+        - label: 標籤名稱
+
+        回傳：
+        - 繪製後的影像
+        """
+        if not self.config.show_detection_box:
+            return frame
+
+        output = frame.copy()
+
+        # 繪製偵測框
+        cv2.rectangle(
+            output,
+            (x1, y1),
+            (x2, y2),
+            self.config.detection_box_color,
+            self.config.detection_box_thickness
+        )
+
+        # 繪製信心值文字
+        text = f"{label}: {confidence:.2f}"
+        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
+
+        # 文字背景
+        cv2.rectangle(
+            output,
+            (x1, y1 - text_size[1] - 5),
+            (x1 + text_size[0], y1),
+            self.config.detection_box_color,
+            -1
+        )
+
+        # 文字內容
+        cv2.putText(
+            output,
+            text,
+            (x1, y1 - 5),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 255),
+            1
+        )
+
+        return output
+
+    def draw_detection_boxes(
+        self,
+        frame: np.ndarray,
+        detections: List[Tuple[int, int, int, int, int, float, str]]
+    ) -> np.ndarray:
+        """
+        在影像上繪製多個偵測框
+
+        參數：
+        - frame: 原始影像
+        - detections: [(center_x, center_y, x1, y1, x2, y2, conf, class_name), ...]
+
+        回傳：
+        - 繪製後的影像
+        """
+        output = frame.copy()
+
+        for det in detections:
+            center_x, center_y, x1, y1, x2, y2, conf, class_name = det
+            output = self.draw_detection_box(
+                output, x1, y1, x2, y2, conf, class_name
+            )
 
         return output
 

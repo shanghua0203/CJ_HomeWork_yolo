@@ -105,7 +105,10 @@ class BallTracker:
         has_new_point = False
 
         if detection is not None:
-            x, y = detection
+            if hasattr(detection, '__len__') and len(detection) >= 2:
+                x, y = detection[0], detection[1]
+            else:
+                x, y = detection
 
             # 有偵測到球
             self.state.is_tracking = True

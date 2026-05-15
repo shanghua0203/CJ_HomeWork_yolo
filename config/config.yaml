@@ -15,10 +15,8 @@ paths:
 
 # === YOLO 偵測設定 ===
 detector:
-  # 乒乓球類別編號（依訓練模型而定）
-  # yolov8n.pt 預設沒有乒乓球類別，這裡假設類別為 0
-  # 若使用自訂模型，請修改此值
-  class_id: 0
+  # 乒乓球類別編號（COCO 模型：32 = sports ball）
+  class_id: 32
 
   # 信心閾值（0.0 ~ 1.0）
   confidence: 0.5

@@ -28,29 +28,45 @@ class BallDetector:
         self,
         model_path: str = "yolov8n.pt",
         class_id: int = 32,
-        confidence: float = 0.5,
-        min_size: int = 10,
-        iou_threshold: float = 0.4
+        confidence: float = 0.15,
+        min_size: int = 5,
+        iou_threshold: float = 0.4,
+        custom_class_names: Optional[dict] = None,
+        use_all_classes: bool = False
     ):
         """
         初始化偵測器
 
         參數說明：
         - model_path: YOLO 模型路徑（預設為 yolov8n.pt，會自動從 ultralytics 下載）
-        - class_id: 要偵測的類別編號（預設為 0）
+                         可使用專門訓練的乒乓球檢測模型（如 best.pt）
+        - class_id: 要偵測的類別編號（預設為 32 = COCO sports ball）
+                         設為 None 時檢測所有類別
         - confidence: 信心閾值，偵測結果必須超過此信心值才採用
+                         預設 0.15 較低，若仍偵測不到可再降低
         - min_size: 偵測框最小邊長，低於此值忽略
         - iou_threshold: 非極大值抑制 (NMS) 的 IOU 閾值
+        - custom_class_names: 自訂類別名稱映射 {class_id: name}
+                              用於專門訓練的模型
+        - use_all_classes: 是否檢測所有類別（忽略 class_id 過濾）
         """
         self.model_path = model_path
         self.class_id = class_id
         self.confidence = confidence
         self.min_size = min_size
         self.iou_threshold = iou_threshold
+        self.custom_class_names = custom_class_names or {}
+        self.use_all_classes = use_all_classes
 
         # 載入 YOLO 模型
         # 使用 verbose=False 減少終端機輸出
         self.model = YOLO(model_path)
+
+        # 嘗試取得模型類別數量
+        try:
+            self.num_classes = len(self.model.names)
+        except:
+            self.num_classes = 80
         
         # 過濾已知的誤判位置（穩定的錯誤偵測）
         # 格式：(center_x, center_y, tolerance)
@@ -100,7 +116,7 @@ class BallDetector:
             cls_id = int(box.cls[0])
 
             # 檢查是否符合目標類別
-            if cls_id != self.class_id:
+            if not self.use_all_classes and self.class_id is not None and cls_id != self.class_id:
                 continue
 
             # 取得信心值
@@ -193,7 +209,7 @@ class BallDetector:
         for box in boxes:
             cls_id = int(box.cls[0])
 
-            if cls_id != self.class_id:
+            if not self.use_all_classes and self.class_id is not None and cls_id != self.class_id:
                 continue
 
             conf = float(box.conf[0])
@@ -277,6 +293,57 @@ class BallDetector:
             ))
 
         return detections
+
+    def set_confidence(self, confidence: float):
+        """動態調整信心閾值"""
+        self.confidence = confidence
+
+    def set_class_id(self, class_id: Optional[int]):
+        """動態調整目標類別（None = 檢測所有類別）"""
+        self.class_id = class_id
+
+
+def create_ping_pong_detector(
+    model_path: str = "yolov8n.pt",
+    confidence: float = 0.15,
+    use_trained_model: bool = False,
+    trained_class_id: int = 0
+) -> BallDetector:
+    """
+    建立乒乓球偵測器的便捷函數
+
+    參數：
+    - model_path: 模型路徑
+    - confidence: 信心閾值（預設 0.15 較低）
+    - use_trained_model: 是否使用專門訓練的乒乓球檢測模型
+                         若為 True，會檢測所有類別的物件
+    - trained_class_id: 當使用訓練模型時的目標類別 ID
+                        （預設 0，通常是訓練時的第一個類別）
+
+    回傳：
+    - BallDetector 實例
+
+    使用範例：
+    # 使用通用 YOLO 模型（低信心度）
+    detector = create_ping_pong_detector("yolov8n.pt", confidence=0.1)
+
+    # 使用專門訓練的乒乓球檢測模型
+    detector = create_ping_pong_detector("best.pt", use_trained_model=True)
+    """
+    if use_trained_model:
+        return BallDetector(
+            model_path=model_path,
+            class_id=trained_class_id,
+            confidence=confidence,
+            use_all_classes=False
+        )
+    else:
+        return BallDetector(
+            model_path=model_path,
+            class_id=32,  # COCO sports ball
+            confidence=confidence,
+            use_all_classes=False
+        )
 
 
 def load_image(image_path: str) -> Optional[np.ndarray]:

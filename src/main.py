@@ -47,7 +47,7 @@ class PingPongAnalyzer:
         output_dir: str = "output",
         use_mouse_selection: bool = False,
         auto_detect_table: bool = True,
-        confidence: float = 0.15,
+        confidence: float = 0.01,
         frame_width: int = 1920,
         frame_height: int = 1080,
         max_jump: int = 100
@@ -449,8 +449,8 @@ def main():
     parser.add_argument(
         "--confidence",
         type=float,
-        default=0.15,
-        help="偵測信心閾值（預設：0.15，若仍偵測不到可設更低如 0.05）"
+        default=0.01,
+        help="偵測信心閾值（預設：0.01，因為 YOLOv8n 對快速移動小球的信心值通常極低）"
     )
 
     parser.add_argument(

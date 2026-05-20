@@ -28,8 +28,9 @@ class BallDetector:
         self,
         model_path: str = "yolov8n.pt",
         class_id: int = 32,
-        confidence: float = 0.15,
+        confidence: float = 0.01,
         min_size: int = 5,
+        max_size: int = 60,
         iou_threshold: float = 0.4,
         custom_class_names: Optional[dict] = None,
         use_all_classes: bool = False
@@ -54,6 +55,7 @@ class BallDetector:
         self.class_id = class_id
         self.confidence = confidence
         self.min_size = min_size
+        self.max_size = max_size
         self.iou_threshold = iou_threshold
         self.custom_class_names = custom_class_names or {}
         self.use_all_classes = use_all_classes
@@ -72,6 +74,7 @@ class BallDetector:
         # 格式：(center_x, center_y, tolerance)
         self.filter_false_positives = [
             (1750, 581, 15),  # 影片右上角LOGO/計時器區域
+            (44, 81, 40),     # 畫面左上角固定誤判區域（計分板/文字疊加）
         ]
 
     def detect(self, frame: np.ndarray) -> Optional[Tuple[int, int]]:
@@ -129,11 +132,14 @@ class BallDetector:
             # 取得偵測框座標 (x1, y1, x2, y2)
             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
 
-            # 檢查框的大小是否符合最小尺寸要求
+            # 檢查框的大小是否符合尺寸要求
             width = x2 - x1
             height = y2 - y1
 
             if width < self.min_size or height < self.min_size:
+                continue
+                
+            if width > self.max_size or height > self.max_size:
                 continue
 
             # 選擇信心值最高的球
@@ -149,6 +155,10 @@ class BallDetector:
         x1, y1, x2, y2 = best_ball
         center_x = int((x1 + x2) / 2)
         center_y = int((y1 + y2) / 2)
+
+        # 過濾已知誤判位置
+        if self._is_false_positive(center_x, center_y):
+            return None
 
         return (center_x, center_y)
 
@@ -223,6 +233,9 @@ class BallDetector:
             height = y2 - y1
 
             if width < self.min_size or height < self.min_size:
+                continue
+                
+            if width > self.max_size or height > self.max_size:
                 continue
 
             if conf > best_conf:
@@ -305,7 +318,7 @@ class BallDetector:
 
 def create_ping_pong_detector(
     model_path: str = "yolov8n.pt",
-    confidence: float = 0.15,
+    confidence: float = 0.01,
     use_trained_model: bool = False,
     trained_class_id: int = 0
 ) -> BallDetector:

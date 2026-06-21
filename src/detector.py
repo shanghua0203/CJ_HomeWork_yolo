@@ -33,7 +33,8 @@ class BallDetector:
         max_size: int = 60,
         iou_threshold: float = 0.4,
         custom_class_names: Optional[dict] = None,
-        use_all_classes: bool = False
+        use_all_classes: bool = False,
+        filter_false_positives: Optional[List[Tuple[int, int, int]]] = None
     ):
         """
         初始化偵測器
@@ -44,12 +45,12 @@ class BallDetector:
         - class_id: 要偵測的類別編號（預設為 32 = COCO sports ball）
                          設為 None 時檢測所有類別
         - confidence: 信心閾值，偵測結果必須超過此信心值才採用
-                         預設 0.15 較低，若仍偵測不到可再降低
         - min_size: 偵測框最小邊長，低於此值忽略
+        - max_size: 偵測框最大邊長，大於此值忽略
         - iou_threshold: 非極大值抑制 (NMS) 的 IOU 閾值
         - custom_class_names: 自訂類別名稱映射 {class_id: name}
-                              用於專門訓練的模型
         - use_all_classes: 是否檢測所有類別（忽略 class_id 過濾）
+        - filter_false_positives: 已知誤判位置列表 [(x, y, tolerance)]
         """
         self.model_path = model_path
         self.class_id = class_id
@@ -59,23 +60,16 @@ class BallDetector:
         self.iou_threshold = iou_threshold
         self.custom_class_names = custom_class_names or {}
         self.use_all_classes = use_all_classes
+        self.filter_false_positives = filter_false_positives or []
 
         # 載入 YOLO 模型
-        # 使用 verbose=False 減少終端機輸出
         self.model = YOLO(model_path)
 
         # 嘗試取得模型類別數量
         try:
             self.num_classes = len(self.model.names)
-        except:
+        except Exception:
             self.num_classes = 80
-        
-        # 過濾已知的誤判位置（穩定的錯誤偵測）
-        # 格式：(center_x, center_y, tolerance)
-        self.filter_false_positives = [
-            (1750, 581, 15),  # 影片右上角LOGO/計時器區域
-            (44, 81, 40),     # 畫面左上角固定誤判區域（計分板/文字疊加）
-        ]
 
     def detect(self, frame: np.ndarray) -> Optional[Tuple[int, int]]:
         """

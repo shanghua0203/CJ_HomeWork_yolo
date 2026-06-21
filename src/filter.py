@@ -145,7 +145,7 @@ class TrajectoryFilter:
 
     def interpolate_missing(
         self,
-        trajectory: List[Tuple[int, int]],
+        trajectory: List[Optional[Tuple[int, int]]],
         frame_indices: List[int]
     ) -> List[Optional[Tuple[int, int]]]:
         """
@@ -171,9 +171,9 @@ class TrajectoryFilter:
         valid_points = []
         valid_indices = []
 
-        for i, (x, y) in enumerate(trajectory):
-            if x is not None and y is not None:
-                valid_points.append((x, y))
+        for i, point in enumerate(trajectory):
+            if point is not None and point[0] is not None and point[1] is not None:
+                valid_points.append(point)
                 valid_indices.append(frame_indices[i] if i < len(frame_indices) else i)
 
         if not valid_points:

@@ -108,10 +108,7 @@ class BallTracker:
         has_new_point = False
 
         if detection is not None:
-            if hasattr(detection, '__len__') and len(detection) >= 2:
-                x, y = detection[0], detection[1]
-            else:
-                x, y = detection
+            x, y = detection[0], detection[1]
 
             # 有偵測到球
             self.state.is_tracking = True
@@ -217,7 +214,7 @@ class BallTracker:
             return {
                 "total_points": len(trajectory),
                 "total_frames": len(self.state.frame_indices),
-                "missing_frames": sum(1 for f in self.state.frame_indices if f is None),
+                "missing_frames": self.state.missing_frames,
                 "is_tracking": self.state.is_tracking,
                 "average_speed": 0,
                 "min_y": trajectory[0][1] if trajectory else None,

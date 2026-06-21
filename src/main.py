@@ -15,7 +15,7 @@ import sys
 import os
 import argparse
 import yaml
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Any
 
 from detector import BallDetector, load_image
 from filter import TrajectoryFilter
@@ -25,7 +25,9 @@ from perspective import (
     PerspectiveTransformer,
     TableCorners,
     MouseCornerSelector,
-    auto_detect_table_corners
+    auto_detect_table_corners,
+    validate_corners,
+    corners_center_distance,
 )
 from visualizer import (
     TrajectoryVisualizer,
@@ -51,21 +53,19 @@ class PingPongAnalyzer:
         confidence: float = 0.01,
         frame_width: int = 1920,
         frame_height: int = 1080,
-        max_jump: int = 100
+        max_jump: int = 100,
+        max_missing_frames: int = 2,
+        y_reversal_threshold: int = 5,
+        min_fall_distance: int = 20,
+        persp_output_width: int = 800,
+        persp_output_height: int = 600,
+        class_id: int = 32,
+        min_size: int = 5,
+        iou_threshold: float = 0.4,
+        default_corners: Optional[TableCorners] = None,
     ):
         """
         初始化分析器
-
-        參數：
-        - video_path: 輸入影片路徑
-        - model_path: YOLO 模型路徑
-        - output_dir: 輸出資料夾
-        - use_mouse_selection: 是否使用滑鼠點選桌子角落
-        - auto_detect_table: 是否自動偵測桌子角落
-        - confidence: 偵測信心閾值
-        - frame_width: 影片寬度
-        - frame_height: 影片高度
-        - max_jump: 最大跳躍距離
         """
         self.video_path = video_path
         self.frame_width = frame_width
@@ -82,23 +82,30 @@ class PingPongAnalyzer:
         # 初始化各模組
         self.detector = BallDetector(
             model_path=model_path,
-            confidence=confidence
+            confidence=confidence,
+            class_id=class_id,
+            min_size=min_size,
+            iou_threshold=iou_threshold,
         )
 
         self.filter = TrajectoryFilter(
             frame_width=frame_width,
             frame_height=frame_height,
-            max_jump=max_jump
+            max_jump=max_jump,
+            max_missing_frames=max_missing_frames
         )
-        self.tracker = BallTracker(max_missing_frames=2)
+        self.tracker = BallTracker(max_missing_frames=max_missing_frames)
         self.landing_detector = LandingDetector(
-            y_reversal_threshold=5,
-            min_fall_distance=20,
+            y_reversal_threshold=y_reversal_threshold,
+            min_fall_distance=min_fall_distance,
             frame_height=frame_height
         )
 
-        # 透視變換器（稍後設定角落）
-        self.transformer = PerspectiveTransformer()
+        self.transformer = PerspectiveTransformer(
+            output_width=persp_output_width,
+            output_height=persp_output_height,
+            default_corners=default_corners,
+        )
 
         # 視覺化器
         self.viz_config = VisualizationConfig()
@@ -111,6 +118,9 @@ class PingPongAnalyzer:
         # 分析結果
         self.all_landings: List[LandingPoint] = []
 
+        # 角落重新偵測狀態
+        self._consecutive_corner_failures = 0
+
     def setup_perspective(self, frame: np.ndarray):
         """
         設定透視變換
@@ -118,12 +128,16 @@ class PingPongAnalyzer:
         參數：
         - frame: 包含桌子的參考影像
         """
+        h, w = frame.shape[:2]
         corners = None
 
         # 嘗試自動偵測
         if self.auto_detect_table:
             print("嘗試自動偵測桌面角落...")
             corners = auto_detect_table_corners(frame)
+            if corners and not validate_corners(corners, w, h):
+                print("  自動偵測結果驗證失敗，嘗試其他方式")
+                corners = None
 
         # 如果自動偵測失敗或需要手動點選
         if corners is None:
@@ -210,15 +224,18 @@ class PingPongAnalyzer:
         # 重置影片位置
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
-        # 建立輸出影片編寫器
-        output_path = os.path.join(self.output_dir, "result.mp4")
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-
         # 確保輸出尺寸是偶數（FFmpeg 要求）
-        output_w = ((width + self.transformer.output_width) + 1) // 2 * 2
-        output_h = (max(height, self.transformer.output_height) + 1) // 2 * 2
+        combined_w = width + self.transformer.output_width
+        combined_h = max(height, self.transformer.output_height)
+        output_w = (combined_w + 1) // 2 * 2
+        output_h = (combined_h + 1) // 2 * 2
 
-        out = cv2.VideoWriter(output_path, fourcc, fps, (output_w, output_h))
+        # 建立輸出影片編寫器（僅在需要儲存時）
+        out = None
+        if save_output:
+            output_path = os.path.join(self.output_dir, "result.mp4")
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(output_path, fourcc, fps, (output_w, output_h))
 
         # 重置追蹤器
         self.tracker.reset()
@@ -246,30 +263,60 @@ class PingPongAnalyzer:
             if not ret:
                 break
 
-            # 定期偵測桌面角落（附 sanity check）
+            # 定期偵測桌面角落（附多重 sanity check）
             if frame_number - last_table_detection >= table_detect_interval:
                 new_corners = auto_detect_table_corners(frame)
+                can_update = False
+                skip_reason = ""
+
                 if new_corners and self.transformer.current_corners:
-                    # 計算新舊角落的 bounding box 面積，避免異常值覆蓋
-                    old_pts = self.transformer.current_corners.to_array()
-                    new_pts = new_corners.to_array()
-                    old_area = (np.max(old_pts[:, 0]) - np.min(old_pts[:, 0])) * \
-                               (np.max(old_pts[:, 1]) - np.min(old_pts[:, 1]))
-                    new_area = (np.max(new_pts[:, 0]) - np.min(new_pts[:, 0])) * \
-                               (np.max(new_pts[:, 1]) - np.min(new_pts[:, 1]))
-                    area_ratio = new_area / old_area if old_area > 0 else 1.0
-                    if area_ratio < 0.3 or area_ratio > 3.0:
-                        print(f"  [幀 {frame_number}] 略過異常角落更新（面積比 {area_ratio:.2f}）")
+                    # 驗證 1：基本合理性檢查（在畫面內、有面積、長寬比正常）
+                    if not validate_corners(new_corners, width, height):
+                        skip_reason = f"基本驗證失敗"
                     else:
-                        self.transformer.set_corners(new_corners)
-                        self.bird_eye_viz = BirdEyeVisualizer(transformer=self.transformer)
-                        last_table_detection = frame_number
-                        print(f"  [幀 {frame_number}] 更新桌面角落")
-                elif new_corners:
+                        # 驗證 2：面積比（新舊角落 bounding box 面積比較）
+                        old_pts = self.transformer.current_corners.to_array()
+                        new_pts = new_corners.to_array()
+                        old_area = (np.max(old_pts[:, 0]) - np.min(old_pts[:, 0])) * \
+                                   (np.max(old_pts[:, 1]) - np.min(old_pts[:, 1]))
+                        new_area = (np.max(new_pts[:, 0]) - np.min(new_pts[:, 0])) * \
+                                   (np.max(new_pts[:, 1]) - np.min(new_pts[:, 1]))
+                        area_ratio = new_area / old_area if old_area > 0 else 1.0
+
+                        if area_ratio < 0.2 or area_ratio > 5.0:
+                            skip_reason = f"面積比 {area_ratio:.2f} 超出範圍 [0.2, 5.0]"
+                        else:
+                            # 驗證 3：中心點位移（避免跳到畫面另一側）
+                            dist = corners_center_distance(
+                                self.transformer.current_corners, new_corners
+                            )
+                            if dist > width * 0.5:
+                                skip_reason = f"中心位移 {dist:.0f}px 超過畫面寬度 50%"
+                            else:
+                                can_update = True
+
+                elif new_corners and not self.transformer.current_corners:
+                    # 首次設定或之前無有效角落：只做基本驗證
+                    if validate_corners(new_corners, width, height):
+                        can_update = True
+                    else:
+                        skip_reason = "基本驗證失敗"
+
+                if can_update:
                     self.transformer.set_corners(new_corners)
                     self.bird_eye_viz = BirdEyeVisualizer(transformer=self.transformer)
                     last_table_detection = frame_number
+                    self._consecutive_corner_failures = 0
                     print(f"  [幀 {frame_number}] 更新桌面角落")
+                else:
+                    self._consecutive_corner_failures += 1
+                    if self._consecutive_corner_failures <= 3:
+                        # 前 3 次只記錄，不跳過間隔（容錯）
+                        print(f"  [幀 {frame_number}] 角落驗證略過（{skip_reason}）")
+                    else:
+                        # 連續失敗 3 次以上才跳過間隔，避免反覆失敗浪費效能
+                        last_table_detection = frame_number
+                        print(f"  [幀 {frame_number}] 連續 {self._consecutive_corner_failures} 次失敗，跳過此週期")
 
             # 偵測乒乓球（使用新方法取得偵測框）
             detection_result = self.detector.detect_with_box(frame)
@@ -372,9 +419,15 @@ class PingPongAnalyzer:
                 elif key == ord('p'):
                     cv2.waitKey(0)
 
-            # 儲存輸出
+            # 儲存輸出（若尺寸不符則填補至偶數）
             if save_output:
-                out.write(combined)
+                if combined.shape[1] != output_w or combined.shape[0] != output_h:
+                    padded = np.zeros((output_h, output_w, 3), dtype=np.uint8)
+                    ch, cw = combined.shape[:2]
+                    padded[:ch, :cw] = combined
+                    out.write(padded)
+                else:
+                    out.write(combined)
 
             frame_number += 1
             processed_frames += 1
@@ -489,8 +542,8 @@ def main():
     parser.add_argument(
         "--confidence",
         type=float,
-        default=0.01,
-        help="偵測信心閾值（預設：0.01，因為 YOLOv8n 對快速移動小球的信心值通常極低）"
+        default=None,
+        help="偵測信心閾值（預設由 config.yaml 決定，可在此覆蓋）"
     )
 
     parser.add_argument(
@@ -502,27 +555,63 @@ def main():
 
     args = parser.parse_args()
 
-    # 載入設定檔，覆蓋預設值
+    # 載入設定檔
     config = load_config("config/config.yaml")
-    cfg = config.get("paths", {})
-    args.model = args.model if args.model != "yolov8n.pt" else cfg.get("model", "yolov8n.pt")
-    args.output = args.output if args.output != "output" else cfg.get("output", "output")
 
-    if "detector" in config:
-        args.confidence = config["detector"].get("confidence", args.confidence)
+    # 設定值優先序：命令列 > config.yaml > 程式碼預設值
+    cfg_paths = config.get("paths", {})
+    if args.model == "yolov8n.pt":
+        args.model = cfg_paths.get("model", "yolov8n.pt")
+    if args.output == "output":
+        args.output = cfg_paths.get("output", "output")
+
+    cfg_detector = config.get("detector", {})
+    if args.confidence is None:
+        args.confidence = cfg_detector.get("confidence", 0.01)
+    detector_class_id = cfg_detector.get("class_id", 32)
+    detector_min_size = int(cfg_detector.get("min_size", 5))
+    detector_iou = cfg_detector.get("iou_threshold", 0.4)
+
+    cfg_filter = config.get("filter", {})
+    cfg_landing = config.get("landing", {})
+    cfg_persp = config.get("perspective", {})
+    persp_default_corners = None
+    if "default_corners" in cfg_persp:
+        dc = cfg_persp["default_corners"]
+        try:
+            persp_default_corners = TableCorners(
+                top_left=tuple(dc["top_left"]),
+                top_right=tuple(dc["top_right"]),
+                bottom_left=tuple(dc["bottom_left"]),
+                bottom_right=tuple(dc["bottom_right"]),
+            )
+        except Exception as e:
+            print(f"警告：預設角落格式無效，跳過 ({e})")
 
     print("=" * 50)
     print("乒乓球落點分析系統")
     print("=" * 50)
+    print(f"設定：模型={args.model} confidence={args.confidence}")
+    print(f"      config 載入={'是' if config else '否'}")
 
-    # 建立分析器
+    # 建立分析器（CLI > config.yaml > 預設值）
     analyzer = PingPongAnalyzer(
         video_path=args.video,
         model_path=args.model,
         output_dir=args.output,
         use_mouse_selection=args.mouse_select,
         auto_detect_table=not args.no_auto_detect,
-        confidence=args.confidence
+        confidence=args.confidence,
+        class_id=detector_class_id,
+        min_size=detector_min_size,
+        iou_threshold=detector_iou,
+        max_jump=cfg_filter.get("max_jump", 100),
+        max_missing_frames=cfg_filter.get("max_missing_frames", 2),
+        y_reversal_threshold=cfg_landing.get("y_reversal_threshold", 5),
+        min_fall_distance=cfg_landing.get("min_fall_distance", 20),
+        persp_output_width=cfg_persp.get("output_width", 800),
+        persp_output_height=cfg_persp.get("output_height", 600),
+        default_corners=persp_default_corners,
     )
 
     # 處理影片

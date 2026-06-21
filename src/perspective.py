@@ -426,7 +426,8 @@ def auto_detect_table_corners(
     """
     自動偵測桌面角落
 
-    使用邊緣偵測和輪廓尋找來偵測桌面
+    使用邊緣偵測和輪廓尋找來偵測桌面。
+    嘗試多組 Canny 閾值，回傳面積最大的四邊形。
 
     參數：
     - image: 輸入影像
@@ -435,48 +436,121 @@ def auto_detect_table_corners(
     回傳：
     - TableCorners 物件，偵測失敗回傳 None
     """
-    # 轉換為灰階
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-    # 高斯模糊
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
-    # Canny 邊緣偵測
-    edges = cv2.Canny(blurred, 50, 150)
+    h, w = image.shape[:2]
+    max_img_area = h * w
 
-    # 找輪廓
-    contours, _ = cv2.findContours(
-        edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
+    # 嘗試多組 Canny 閾值，適應不同亮度/對比
+    canny_params = [
+        (50, 150),
+        (30, 100),
+        (100, 200),
+        (20, 80),
+    ]
 
-    if not contours:
-        return None
+    best_corners = None
+    best_area = 0
 
-    # 找最大的四邊形輪廓
-    for contour in contours:
-        area = cv2.contourArea(contour)
+    for low, high in canny_params:
+        edges = cv2.Canny(blurred, low, high)
+        contours, _ = cv2.findContours(
+            edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
 
-        if area < min_area:
+        if not contours:
             continue
 
-        # 逼近輪廓
-        epsilon = 0.02 * cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, epsilon, True)
+        for contour in contours:
+            area = cv2.contourArea(contour)
 
-        # 如果是四邊形
-        if len(approx) == 4:
-            # 找出四個角並排序
+            if area < min_area or area > max_img_area * 0.95:
+                continue
+
+            epsilon = 0.02 * cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+
+            if len(approx) != 4:
+                continue
+
             points = approx.reshape(4, 2)
             corners = sort_four_points(points)
 
-            return TableCorners(
-                top_left=tuple(corners[0]),
-                top_right=tuple(corners[1]),
-                bottom_left=tuple(corners[2]),
-                bottom_right=tuple(corners[3])
-            )
+            if area > best_area:
+                best_area = area
+                best_corners = TableCorners(
+                    top_left=tuple(corners[0]),
+                    top_right=tuple(corners[1]),
+                    bottom_left=tuple(corners[2]),
+                    bottom_right=tuple(corners[3])
+                )
 
-    return None
+    return best_corners
+
+
+def validate_corners(
+    corners: TableCorners,
+    frame_width: int,
+    frame_height: int,
+    min_side_ratio: float = 0.05
+) -> bool:
+    """
+    驗證桌面角落是否合理。
+
+    檢查條件：
+    - 所有點在畫面內
+    - 四邊形非退化（有實際面積）
+    - 長邊 / 短邊比例不超過 5:1
+
+    回傳：
+    - True 如果角落合理
+    """
+    pts = np.array([
+        corners.top_left, corners.top_right,
+        corners.bottom_left, corners.bottom_right
+    ], dtype=np.float32)
+
+    # 所有點必須在畫面範圍內（允許小幅邊界溢位）
+    margin = 50
+    if np.any(pts[:, 0] < -margin) or np.any(pts[:, 0] > frame_width + margin):
+        return False
+    if np.any(pts[:, 1] < -margin) or np.any(pts[:, 1] > frame_height + margin):
+        return False
+
+    # 四邊形必須有正面積
+    area = cv2.contourArea(pts.astype(np.int32).reshape(4, 1, 2))
+    if area < frame_width * frame_height * min_side_ratio:
+        return False
+
+    # 長寬比不能過於極端（桌面約 2:1，允許到 5:1）
+    side_lengths = [
+        np.linalg.norm(pts[0] - pts[1]),
+        np.linalg.norm(pts[1] - pts[3]),
+        np.linalg.norm(pts[3] - pts[2]),
+        np.linalg.norm(pts[2] - pts[0]),
+    ]
+    long_side = max(side_lengths)
+    short_side = min(side_lengths)
+    if short_side == 0:
+        return False
+    if long_side / short_side > 5.0:
+        return False
+
+    return True
+
+
+def corners_center_distance(
+    a: TableCorners,
+    b: TableCorners
+) -> float:
+    """計算兩組角落中心點的歐氏距離"""
+    def center(c: TableCorners):
+        pts = np.array([c.top_left, c.top_right, c.bottom_left, c.bottom_right])
+        return np.mean(pts[:, 0]), np.mean(pts[:, 1])
+    ca = center(a)
+    cb = center(b)
+    return float(np.sqrt((ca[0] - cb[0])**2 + (ca[1] - cb[1])**2))
 
 
 def sort_four_points(points: np.ndarray) -> np.ndarray:

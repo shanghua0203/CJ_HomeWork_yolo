@@ -22,7 +22,7 @@ detector:
   confidence: 0.1
 
   # 偵測框大小下限（pixels），太小的忽略
-  min_size: 0.1
+  min_size: 5
 
   # NMS 閾值（非極大值抑制）
   iou_threshold: 0.4

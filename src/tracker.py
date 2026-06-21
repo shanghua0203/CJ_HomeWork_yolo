@@ -54,6 +54,7 @@ class BallTracker:
         self,
         max_missing_frames: int = 2,
         min_trajectory_length: int = 2,
+        max_trajectory_length: int = 5000,
         trajectory_color: Tuple[int, int, int] = (0, 255, 0),
         trajectory_thickness: int = 2,
         ball_radius: int = 5,
@@ -65,6 +66,7 @@ class BallTracker:
         參數說明：
         - max_missing_frames: 允許球消失的最大幀數（掉幀容忍度）
         - min_trajectory_length: 最少需要的軌跡點數量
+        - max_trajectory_length: 軌跡點數量上限，超過時自動截斷舊資料
         - trajectory_color: 軌跡線顏色 (B, G, R)
         - trajectory_thickness: 軌跡線粗細
         - ball_radius: 球標記半徑
@@ -72,6 +74,7 @@ class BallTracker:
         """
         self.max_missing_frames = max_missing_frames
         self.min_trajectory_length = min_trajectory_length
+        self.max_trajectory_length = max_trajectory_length
         self.trajectory_color = trajectory_color
         self.trajectory_thickness = trajectory_thickness
         self.ball_radius = ball_radius
@@ -120,6 +123,12 @@ class BallTracker:
             self.state.trajectory.append((x, y))
             self.state.frame_indices.append(frame_number)
             has_new_point = True
+
+            # 截斷舊資料，防止記憶體無限制增長
+            if len(self.state.trajectory) > self.max_trajectory_length:
+                excess = len(self.state.trajectory) - self.max_trajectory_length
+                self.state.trajectory = self.state.trajectory[excess:]
+                self.state.frame_indices = self.state.frame_indices[excess:]
 
         else:
             # 沒偵測到球

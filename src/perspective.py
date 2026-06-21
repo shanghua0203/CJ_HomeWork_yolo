@@ -114,12 +114,12 @@ class PerspectiveTransformer:
         # 取得原始座標點
         src_points = self.current_corners.to_array()
 
-        # 定義輸出矩形的四個角
+        # 定義輸出矩形的四個角（順序須匹配 src_points：TL, TR, BR, BL）
         dst_points = np.array([
             [0, 0],
             [self.output_width, 0],
-            [0, self.output_height],
-            [self.output_width, self.output_height]
+            [self.output_width, self.output_height],
+            [0, self.output_height]
         ], dtype=np.float32)
 
         # 計算透視變換矩陣
@@ -395,12 +395,15 @@ class MouseCornerSelector:
 
         cv2.destroyWindow(self.window_name)
 
-        # 建立 TableCorners 物件
+        # 排序四個點確保順序正確（左上→右上→左下→右下）
+        points_array = np.array(self.corners, dtype=np.float32)
+        sorted_pts = sort_four_points(points_array)
+
         return TableCorners(
-            top_left=self.corners[0],
-            top_right=self.corners[1],
-            bottom_left=self.corners[2],
-            bottom_right=self.corners[3]
+            top_left=tuple(int(x) for x in sorted_pts[0]),
+            top_right=tuple(int(x) for x in sorted_pts[1]),
+            bottom_left=tuple(int(x) for x in sorted_pts[2]),
+            bottom_right=tuple(int(x) for x in sorted_pts[3])
         )
 
     def _get_color(self, index: int) -> Tuple[int, int, int]:
@@ -480,27 +483,33 @@ def sort_four_points(points: np.ndarray) -> np.ndarray:
     """
     將四個點排序為：左上、右上、左下、右下
 
+    使用 (x+y) 與 (x-y) 組合判斷，比單純 Y 軸分組或角度排序更穩健。
+
     參數：
     - points: 4x2 的點陣列
 
     回傳：
     - 排序後的點陣列
     """
-    # 根據 Y 座標分組（上面和下面）
-    sorted_points = points[np.argsort(points[:, 1])]
+    s = points[:, 0] + points[:, 1]   # x+y：左上最小，右下最大
+    d = points[:, 0] - points[:, 1]   # x-y：右上→左下遞增
 
-    # 上面兩個點
-    top_points = sorted_points[:2]
-    # 下面兩個點
-    bottom_points = sorted_points[2:]
+    tl_idx = int(np.argmin(s))
+    br_idx = int(np.argmax(s))
 
-    # 根據 X 座標排序
-    top_left = top_points[np.argmin(top_points[:, 0])]
-    top_right = top_points[np.argmax(top_points[:, 0])]
-    bottom_left = bottom_points[np.argmin(bottom_points[:, 0])]
-    bottom_right = bottom_points[np.argmax(bottom_points[:, 0])]
+    # 從剩餘兩點中區分 TR（x-y 較大，右上）與 BL（x-y 較小，左下）
+    remaining = [i for i in range(4) if i != tl_idx and i != br_idx]
+    if d[remaining[0]] > d[remaining[1]]:
+        tr_idx, bl_idx = remaining[0], remaining[1]
+    else:
+        tr_idx, bl_idx = remaining[1], remaining[0]
 
-    return np.array([top_left, top_right, bottom_left, bottom_right])
+    return np.array([
+        points[tl_idx],
+        points[tr_idx],
+        points[bl_idx],
+        points[br_idx],
+    ])
 
 
 # ===========================================

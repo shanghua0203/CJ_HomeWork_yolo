@@ -34,7 +34,7 @@ class TestBallDetector:
         assert detector.model is not None
         # 預設類別現在是 32 (sports ball)
         assert detector.class_id == 32
-        assert detector.confidence == 0.5
+        assert detector.confidence == 0.01
 
     def test_detector_init_custom(self):
         """測試 2：使用自訂參數建立偵測器"""

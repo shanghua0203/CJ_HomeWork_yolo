@@ -147,7 +147,7 @@ class TrajectoryFilter:
         self,
         trajectory: List[Tuple[int, int]],
         frame_indices: List[int]
-    ) -> List[Tuple[int, int]]:
+    ) -> List[Optional[Tuple[int, int]]]:
         """
         對掉幀進行線性插值補間
 

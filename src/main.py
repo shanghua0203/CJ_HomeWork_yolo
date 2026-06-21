@@ -14,11 +14,12 @@ import numpy as np
 import sys
 import os
 import argparse
-from typing import List, Tuple, Optional
+import yaml
+from typing import List, Tuple, Optional, Dict
 
 from detector import BallDetector, load_image
-from filter import TrajectoryFilter, smooth_trajectory
-from tracker import BallTracker, connect_trajectory_gaps
+from filter import TrajectoryFilter
+from tracker import BallTracker
 from landing_detector import LandingDetector, LandingPoint
 from perspective import (
     PerspectiveTransformer,
@@ -92,7 +93,8 @@ class PingPongAnalyzer:
         self.tracker = BallTracker(max_missing_frames=2)
         self.landing_detector = LandingDetector(
             y_reversal_threshold=5,
-            min_fall_distance=20
+            min_fall_distance=20,
+            frame_height=frame_height
         )
 
         # 透視變換器（稍後設定角落）
@@ -186,6 +188,13 @@ class PingPongAnalyzer:
         height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
+        # 以實際影片尺寸覆寫各模組設定
+        self.frame_width = width
+        self.frame_height = height
+        self.filter.frame_width = width
+        self.filter.frame_height = height
+        self.landing_detector.frame_height = height
+
         print(f"\n影片屬性：")
         print(f"  尺寸：{width} x {height}")
         print(f"  幀率：{fps} fps")
@@ -205,9 +214,9 @@ class PingPongAnalyzer:
         output_path = os.path.join(self.output_dir, "result.mp4")
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 
-        # 確保輸出寬度是偶數（FFmpeg 要求）
-        output_w = (width + self.transformer.output_width) // 2 * 2
-        output_h = max(height, self.transformer.output_height)
+        # 確保輸出尺寸是偶數（FFmpeg 要求）
+        output_w = ((width + self.transformer.output_width) + 1) // 2 * 2
+        output_h = (max(height, self.transformer.output_height) + 1) // 2 * 2
 
         out = cv2.VideoWriter(output_path, fourcc, fps, (output_w, output_h))
 
@@ -237,10 +246,26 @@ class PingPongAnalyzer:
             if not ret:
                 break
 
-            # 定期偵測桌面角落
+            # 定期偵測桌面角落（附 sanity check）
             if frame_number - last_table_detection >= table_detect_interval:
                 new_corners = auto_detect_table_corners(frame)
-                if new_corners:
+                if new_corners and self.transformer.current_corners:
+                    # 計算新舊角落的 bounding box 面積，避免異常值覆蓋
+                    old_pts = self.transformer.current_corners.to_array()
+                    new_pts = new_corners.to_array()
+                    old_area = (np.max(old_pts[:, 0]) - np.min(old_pts[:, 0])) * \
+                               (np.max(old_pts[:, 1]) - np.min(old_pts[:, 1]))
+                    new_area = (np.max(new_pts[:, 0]) - np.min(new_pts[:, 0])) * \
+                               (np.max(new_pts[:, 1]) - np.min(new_pts[:, 1]))
+                    area_ratio = new_area / old_area if old_area > 0 else 1.0
+                    if area_ratio < 0.3 or area_ratio > 3.0:
+                        print(f"  [幀 {frame_number}] 略過異常角落更新（面積比 {area_ratio:.2f}）")
+                    else:
+                        self.transformer.set_corners(new_corners)
+                        self.bird_eye_viz = BirdEyeVisualizer(transformer=self.transformer)
+                        last_table_detection = frame_number
+                        print(f"  [幀 {frame_number}] 更新桌面角落")
+                elif new_corners:
                     self.transformer.set_corners(new_corners)
                     self.bird_eye_viz = BirdEyeVisualizer(transformer=self.transformer)
                     last_table_detection = frame_number
@@ -276,15 +301,20 @@ class PingPongAnalyzer:
             current_trajectory = trajectory[current_ball_start:]
             current_frame_indices = frame_indices[current_ball_start:]
             
-            # 過濾軌跡
-            filtered_trajectory = self.filter.filter_trajectory(current_trajectory)
+            # 掉幀補間（填補小的幀間隔）
+            interpolated = self.filter.interpolate_missing(
+                current_trajectory, current_frame_indices
+            )
+            valid_trajectory = [p for p in interpolated if p is not None]
+
+            # 過濾雜訊
+            filtered_trajectory = self.filter.filter_trajectory(valid_trajectory)
             
-            # 偵測落點
+            # 偵測落點（不傳 frame_indices，因插值/過濾後長度已不一致）
             current_landings = []
             if len(filtered_trajectory) >= 3:
                 current_landings = self.landing_detector.detect(
-                    filtered_trajectory,
-                    current_frame_indices
+                    filtered_trajectory
                 )
             
             # 添加新落點到總列表（避免重複）
@@ -296,17 +326,17 @@ class PingPongAnalyzer:
                 if not is_dup:
                     self.all_landings.append(lp)
 
-            # 繪製偵測框
+            # 繪製軌跡（先建立 output_frame）
+            output_frame = self.trajectory_viz.draw_trajectory(
+                frame, filtered_trajectory
+            )
+
+            # 繪製偵測框（疊在軌跡上方）
             if current_detection:
                 x1, y1, x2, y2, conf, label = current_detection
                 output_frame = self.trajectory_viz.draw_detection_box(
                     output_frame, x1, y1, x2, y2, conf, label
                 )
-
-            # 繪製軌跡
-            output_frame = self.trajectory_viz.draw_trajectory(
-                frame, filtered_trajectory
-            )
 
             # 繪製落點
             output_frame = self.trajectory_viz.draw_landing_points(
@@ -401,6 +431,16 @@ class PingPongAnalyzer:
         print(f"\n落點報告已儲存至：{report_path}")
 
 
+def load_config(config_path: str = "config/config.yaml") -> Dict:
+    """
+    讀取設定檔，回傳設定字典（不存在時回傳空字典）
+    """
+    if not os.path.exists(config_path):
+        return {}
+    with open(config_path, 'r', encoding='utf-8') as f:
+        return yaml.safe_load(f)
+
+
 def main():
     """
     主程式入口
@@ -461,6 +501,15 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # 載入設定檔，覆蓋預設值
+    config = load_config("config/config.yaml")
+    cfg = config.get("paths", {})
+    args.model = args.model if args.model != "yolov8n.pt" else cfg.get("model", "yolov8n.pt")
+    args.output = args.output if args.output != "output" else cfg.get("output", "output")
+
+    if "detector" in config:
+        args.confidence = config["detector"].get("confidence", args.confidence)
 
     print("=" * 50)
     print("乒乓球落點分析系統")

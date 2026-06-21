@@ -36,7 +36,8 @@ class LandingDetector:
         self,
         y_reversal_threshold: int = 5,
         min_fall_distance: int = 20,
-        min_trajectory_length: int = 3
+        min_trajectory_length: int = 3,
+        frame_height: int = 1080
     ):
         """
         初始化落點偵測器
@@ -44,7 +45,11 @@ class LandingDetector:
         self.y_reversal_threshold = y_reversal_threshold
         self.min_fall_distance = min_fall_distance
         self.min_trajectory_length = min_trajectory_length
-        self._processed_index = 0
+        self.frame_height = frame_height
+
+    def _adaptive_threshold(self) -> int:
+        """根據畫面高度動態計算反轉閾值（約 0.5% 畫面高度）"""
+        return max(self.y_reversal_threshold, self.frame_height // 200)
 
     def detect_y_reversal(self, y_values: List[int]) -> List[int]:
         """
@@ -54,6 +59,7 @@ class LandingDetector:
         if len(y_values) < 3:
             return []
 
+        threshold = self._adaptive_threshold()
         reversals = []
 
         for i in range(1, len(y_values) - 1):
@@ -63,7 +69,7 @@ class LandingDetector:
 
             if curr_y > prev_y and next_y < curr_y:
                 reversal_size = curr_y - next_y
-                if reversal_size >= self.y_reversal_threshold:
+                if reversal_size >= threshold:
                     reversals.append(i)
 
         return reversals
@@ -120,7 +126,8 @@ class LandingDetector:
         frame_indices: Optional[List[int]] = None
     ) -> List[LandingPoint]:
         """
-        偵測所有落點（僅分析新加入的軌跡點，防止重複偵測）
+        偵測所有落點
+        （去重由呼叫端 main.py 的 is_dup 機制負責）
         """
         if len(trajectory) < self.min_trajectory_length:
             return []
@@ -128,47 +135,29 @@ class LandingDetector:
         if frame_indices is None:
             frame_indices = list(range(len(trajectory)))
 
-        start_index = self._processed_index
-        if start_index >= len(trajectory):
-            return []
-
-        new_trajectory = trajectory[start_index:]
-        new_frame_indices = frame_indices[start_index:]
-
-        if len(new_trajectory) < 3:
-            return []
-
-        y_values = [p[1] for p in new_trajectory]
+        y_values = [p[1] for p in trajectory]
         reversal_indices = self.detect_y_reversal(y_values)
 
         landing_points = []
 
         for rev_idx in reversal_indices:
-            x, y, _ = self.find_lowest_before_reversal(new_trajectory, rev_idx)
+            x, y, _ = self.find_lowest_before_reversal(trajectory, rev_idx)
 
             if x < 0:
                 continue
 
-            landing_idx = start_index + rev_idx
-            full_segment = trajectory[:landing_idx + 1]
-
-            if not self.is_valid_landing(full_segment, landing_idx):
+            if not self.is_valid_landing(trajectory, rev_idx):
                 continue
-
-            segment = trajectory[:landing_idx + 1]
 
             landing = LandingPoint(
                 x=x,
                 y=y,
-                frame_index=frame_indices[landing_idx],
+                frame_index=frame_indices[rev_idx],
                 lowest_y=y,
-                trajectory_segment=segment
+                trajectory_segment=trajectory[:rev_idx + 1]
             )
 
             landing_points.append(landing)
-
-        if landing_points:
-            self._processed_index = len(trajectory)
 
         return landing_points
 

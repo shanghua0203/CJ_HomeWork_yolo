@@ -19,10 +19,10 @@ detector:
   class_id: 32
 
   # 信心閾值（0.0 ~ 1.0）
-  confidence: 0.5
+  confidence: 0.1
 
   # 偵測框大小下限（pixels），太小的忽略
-  min_size: 10
+  min_size: 0.1
 
   # NMS 閾值（非極大值抑制）
   iou_threshold: 0.4
@@ -34,7 +34,7 @@ filter:
   max_jump: 100
 
   # 允許球消失的最多幀數（掉幀處理）
-  max_missing_frames: 2
+  max_missing_frames: 5
 
 
 # === 落點判斷設定 ===

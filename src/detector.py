@@ -71,6 +71,10 @@ class BallDetector:
         except Exception:
             self.num_classes = 80
 
+    def _preprocess(self, frame: np.ndarray) -> np.ndarray:
+        blurred = cv2.GaussianBlur(frame, (0, 0), 1.5)
+        return cv2.addWeighted(frame, 1.3, blurred, -0.3, 0)
+
     def detect(self, frame: np.ndarray) -> Optional[Tuple[int, int]]:
         """
         偵測乒乓球並返回中心座標
@@ -81,6 +85,9 @@ class BallDetector:
         回傳：
         - (x, y) 中心座標（像素），如果沒偵測到球則回傳 None
         """
+        # 動態銳化：減輕運動殘影對 YOLO 的影響
+        frame = self._preprocess(frame)
+
         # 執行 YOLO 偵測
         # conf=信心閾值, iou=NMS閾值, verbose=False=安靜模式
         results = self.model(
@@ -132,8 +139,9 @@ class BallDetector:
 
             if width < self.min_size or height < self.min_size:
                 continue
-                
-            if width > self.max_size or height > self.max_size:
+
+            # 殘影容許：僅在長寬皆過大時才濾除（單邊拉長表示運動模糊）
+            if width > self.max_size and height > self.max_size:
                 continue
 
             # 選擇信心值最高的球
@@ -188,6 +196,9 @@ class BallDetector:
         - (center_x, center_y, x1, y1, x2, y2, confidence)
           如果沒偵測到球則回傳 None
         """
+        # 動態銳化：減輕運動殘影對 YOLO 的影響
+        frame = self._preprocess(frame)
+
         # 執行 YOLO 偵測
         results = self.model(
             frame,
@@ -228,8 +239,8 @@ class BallDetector:
 
             if width < self.min_size or height < self.min_size:
                 continue
-                
-            if width > self.max_size or height > self.max_size:
+
+            if width > self.max_size and height > self.max_size:
                 continue
 
             if conf > best_conf:

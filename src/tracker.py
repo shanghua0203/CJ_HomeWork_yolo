@@ -90,6 +90,31 @@ class BallTracker:
         """
         self.state = TrackingState()
 
+    def _predict_position(self, n_future: int = 1) -> Optional[Tuple[int, int]]:
+        traj = self.state.trajectory
+        if len(traj) < 2:
+            return self.state.last_valid_point
+
+        pts = traj[-3:] if len(traj) >= 3 else traj
+        vx = pts[-1][0] - pts[-2][0]
+        vy = pts[-1][1] - pts[-2][1]
+
+        if len(pts) >= 3:
+            ax = (pts[-1][0] - pts[-2][0]) - (pts[-2][0] - pts[-3][0])
+            ay = (pts[-1][1] - pts[-2][1]) - (pts[-2][1] - pts[-3][1])
+        else:
+            ax = ay = 0
+
+        px = int(pts[-1][0] + vx * n_future + 0.5 * ax * (n_future ** 2))
+        py = int(pts[-1][1] + vy * n_future + 0.5 * ay * (n_future ** 2))
+
+        if self.state.last_valid_point is not None:
+            lx, ly = self.state.last_valid_point
+            if abs(px - lx) > 500 or abs(py - ly) > 500:
+                return self.state.last_valid_point
+
+        return (px, py)
+
     def update(
         self,
         detection: Optional[Tuple[int, int]],
@@ -130,6 +155,14 @@ class BallTracker:
         else:
             # 沒偵測到球
             self.state.missing_frames += 1
+
+            # 若仍在追蹤且未超出容忍範圍，用速度預測補位
+            if self.state.is_tracking and self.state.missing_frames <= self.max_missing_frames:
+                predicted = self._predict_position(self.state.missing_frames)
+                if predicted is not None:
+                    self.state.trajectory.append(predicted)
+                    self.state.frame_indices.append(frame_number)
+                    has_new_point = True
 
             # 如果超出容忍範圍，停止追蹤
             if self.state.missing_frames > self.max_missing_frames:

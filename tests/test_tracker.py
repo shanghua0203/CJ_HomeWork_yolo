@@ -74,9 +74,10 @@ class TestTrackingBasic:
         tracker.update((100, 100), 0)
         result = tracker.update(None, 1)
 
-        assert result is False
+        assert result is True
         assert tracker.is_tracking() is True
         assert tracker.state.missing_frames == 1
+        assert len(tracker.state.trajectory) == 2
 
     def test_update_multiple_frames(self):
         """測試 5：多幀追蹤"""
